@@ -8,10 +8,10 @@ import re
 from datetime import datetime
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="UK FC Picking Velocity Map")
+st.set_page_config(layout="wide", page_title="USA FC Picking Velocity Map")
 
 # --- 2. DATA SOURCES ---
-SHEET_ID = "1VQcQxlNfLXaxNhpEpcsoLP-IClQ7pWyGHZ32_NLaIRI/edit"
+SHEET_ID = "1VQcQxlNfLXaxNhpEpcsoLP-IClQ7pWyGHZ32_NLaIRI"
 RAW_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=RAW"
 
 st.sidebar.title("🏃 Picking Navigation")
