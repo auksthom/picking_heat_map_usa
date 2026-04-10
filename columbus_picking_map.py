@@ -16,15 +16,10 @@ SHEET_ID = "1VQcQxlNfLXaxNhpEpcsoLP-IClQ7pWyGHZ32_NLaIRI"
 @st.cache_data(ttl=10)
 def load_data():
     t = datetime.now().timestamp()
-    
-    # A. Load Picking Data
     RAW_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=RAW"
     df_raw = pd.read_csv(f"{RAW_URL}&t={t}")
     df_raw.columns = df_raw.columns.str.strip().str.replace(' ', '_').str.lower()
-    
-    # B. Load Layout (Direct Excel Scan)
     df_layout = pd.read_excel('Untitled spreadsheet (1).xlsx', header=None)
-    
     return df_layout, df_raw
 
 try:
@@ -32,7 +27,7 @@ try:
 
     def sanitize(text):
         if pd.isna(text): return ""
-        return re.sub(r'[^A-Z0-9]', '', str(text).upper())
+        return re.sub(r'[^A-Z0-9]', '', str(text)).upper()
 
     # --- 3. FILTERS ---
     st.sidebar.title("🏃 Columbus Picking")
@@ -40,25 +35,22 @@ try:
     selected_client = st.sidebar.selectbox("Filter by Client", client_list)
 
     # --- 4. DATA PREP & GHOST FILTERING ---
-    # Get the set of all valid bays from the Excel Layout
-    valid_layout_bays = set()
-    for val in df_map.values.flatten():
-        if pd.notna(val) and str(val).strip().lower() != "nan":
-            valid_layout_bays.add(sanitize(val))
+    # Get valid bays from Excel
+    valid_layout_bays = {sanitize(val) for val in df_map.values.flatten() if pd.notna(val) and str(val).strip().lower() != "nan"}
 
-    # Filter Raw Data by Client
+    # Prep the data
+    df_raw_data['match_key'] = df_raw_data['bay'].apply(sanitize)
+
+    # Global Ghosts (Every ghost on the site, regardless of client)
+    df_global_ghosts = df_raw_data[~df_raw_data['match_key'].isin(valid_layout_bays)].copy()
+
+    # Filtered Data for the Map
     if selected_client != "All Clients":
         df_work = df_raw_data[df_raw_data['client_name'] == selected_client].copy()
     else:
         df_work = df_raw_data.copy()
 
-    df_work['match_key'] = df_work['bay'].apply(sanitize)
-
-    # SPLIT DATA: Mapped vs Unmapped (Ghosts)
     df_mapped = df_work[df_work['match_key'].isin(valid_layout_bays)].copy()
-    df_ghosts = df_work[~df_work['match_key'].isin(valid_layout_bays)].copy()
-
-    # Calculate Velocity ONLY for mapped bays
     bay_counts = df_mapped['match_key'].value_counts().to_dict()
 
     # --- 5. GRID SCAN ---
@@ -77,9 +69,8 @@ try:
                 m_key = sanitize(val)
                 count = bay_counts.get(m_key, 0)
                 color_grid.iloc[r, c] = count if count > 0 else 0.001
-                
                 if search_key and m_key == search_key: found_coords = (r, c)
-
+                
                 clean_name = re.sub(r'\d+', '', val).rstrip('-').strip()
                 if f"{clean_name}_{c}" not in processed_labels:
                     label_positions.append((r, c, clean_name))
@@ -89,16 +80,12 @@ try:
 
     # --- 6. VISUALIZATION ---
     st.title(f"Columbus Picking Velocity: {selected_client}")
-    
-    # max_val now only reflects data that is actually ON the map
     max_val = max(bay_counts.values()) if bay_counts else 1
     
     plt.rcParams['figure.facecolor'] = '#121212'
     fig, ax = plt.subplots(figsize=(25, 12)) 
     ax.set_facecolor('#121212')
-    
-    colors = ["#f2f2f2", "#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"]
-    cmap = mcolors.LinearSegmentedColormap.from_list("velocity", colors, N=256)
+    cmap = mcolors.LinearSegmentedColormap.from_list("velocity", ["#f2f2f2", "#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"], N=256)
     
     sns.heatmap(color_grid.astype(float), cmap=cmap, cbar=True, linewidths=0.2, 
                 linecolor='#121212', mask=color_grid.isnull(), ax=ax, vmin=0, vmax=max_val)
@@ -114,22 +101,28 @@ try:
 
     # --- 7. SUMMARY DASHBOARDS ---
     st.markdown("---")
-    col_a, col_b, col_c = st.columns(3)
+    col_left, col_right = st.columns([2, 1])
     
-    with col_a:
-        st.subheader("🏟️ Top 15 Mapped Bays")
-        st.dataframe(df_mapped['bay'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
+    with col_left:
+        st.subheader(f"🏟️ Top Mapped Bays ({selected_client})")
+        st.dataframe(df_mapped['bay'].value_counts().reset_index(), use_container_width=True, hide_index=True)
         
-    with col_b:
-        st.subheader("📍 Top 15 Mapped Locations")
-        st.dataframe(df_mapped['location'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
+    with col_right:
+        st.error("👻 Ghost Location Auditor")
+        ghost_view = st.radio("Show Ghosts for:", ["Current Client Only", "Entire Site (All Clients)"])
+        
+        if ghost_view == "Current Client Only":
+            # Filter ghosts to just the selected client
+            display_ghosts = df_global_ghosts[df_global_ghosts['client_name'] == selected_client] if selected_client != "All Clients" else df_global_ghosts
+        else:
+            display_ghosts = df_global_ghosts
 
-    with col_c:
-        st.error("👻 Unmapped 'Ghost' Locations")
-        st.write("These locations had picks but are NOT in your Excel layout:")
-        ghost_summary = df_ghosts['bay'].value_counts().reset_index()
+        ghost_summary = display_ghosts['bay'].value_counts().reset_index()
         ghost_summary.columns = ['Bay Name', 'Pick Count']
-        st.dataframe(ghost_summary.head(15), use_container_width=True, hide_index=True)
+        
+        st.write(f"Showing {len(ghost_summary)} unmapped locations:")
+        # Removed .head(15) so you see EVERYTHING
+        st.dataframe(ghost_summary, use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"Error: {e}")
