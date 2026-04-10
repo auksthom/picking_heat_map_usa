@@ -26,7 +26,7 @@ try:
     df_map, df_raw_data = load_data()
 
     def sanitize(text):
-        if pd.isna(text): return ""
+        if pd.isna(text) or str(text).strip() == "": return "MISSING_BAY"
         return re.sub(r'[^A-Z0-9]', '', str(text).upper())
 
     # --- 3. FILTERS ---
@@ -37,12 +37,19 @@ try:
     # --- 4. DATA PREP & GHOST FILTERING ---
     # Map valid bays from Excel
     valid_layout_bays = {sanitize(val) for val in df_map.values.flatten() if pd.notna(val) and str(val).strip().lower() != "nan"}
+    
+    # Handle blank bay names in the raw data
+    df_raw_data['bay'] = df_raw_data['bay'].fillna("NO BAY NAME")
     df_raw_data['match_key'] = df_raw_data['bay'].apply(sanitize)
 
-    # Global Ghosts for the auditor
-    df_global_ghosts = df_raw_data[~df_raw_data['match_key'].isin(valid_layout_bays)].copy()
+    # GHOST LOGIC: 
+    # A location is a ghost if the match_key is NOT in Excel OR if the match_key is "MISSING_BAY"
+    df_global_ghosts = df_raw_data[
+        (~df_raw_data['match_key'].isin(valid_layout_bays)) | 
+        (df_raw_data['match_key'] == "MISSING_BAY")
+    ].copy()
 
-    # Filtered Data for Map
+    # Filtered Data for Map (Only show bays that actually exist in the layout)
     if selected_client != "All Clients":
         df_work = df_raw_data[df_raw_data['client_name'] == selected_client].copy()
     else:
@@ -97,7 +104,7 @@ try:
     plt.axis('off')
     st.pyplot(fig, use_container_width=True)
 
-    # --- 7. THE FULL SUMMARY DASHBOARD ---
+    # --- 7. THE SUMMARY DASHBOARD ---
     st.markdown("---")
     st.subheader(f"📊 Activity Stats: {selected_client}")
     
@@ -105,12 +112,10 @@ try:
     
     with col_bays:
         st.markdown("### 🏟️ Top 15 Mapped Bays")
-        st.write("*(Consolidated traffic zones)*")
         st.dataframe(df_mapped['bay'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
         
     with col_locs:
         st.markdown("### 📍 Top 15 Picked Locations")
-        st.write("*(Specific bin/shelf faces)*")
         st.dataframe(df_mapped['location'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
 
     with col_ghosts:
@@ -119,10 +124,11 @@ try:
         
         target_ghosts = df_global_ghosts[df_global_ghosts['client_name'] == selected_client] if (ghost_view == "Client Only" and selected_client != "All Clients") else df_global_ghosts
         
-        ghost_sum = target_ghosts['bay'].value_counts().reset_index()
-        ghost_sum.columns = ['Bay Name', 'Picks']
+        # We group by Bay but also show the Location in the Ghost dashboard for clarity
+        ghost_sum = target_ghosts.groupby(['bay', 'location']).size().reset_index(name='Picks')
+        ghost_sum = ghost_sum.sort_values('Picks', ascending=False)
         
-        st.write(f"**{len(ghost_sum)}** locations found that are not in Excel.")
+        st.write(f"**{len(ghost_sum)}** unknown location/bay combinations found.")
         st.dataframe(ghost_sum, use_container_width=True, hide_index=True)
 
 except Exception as e:
