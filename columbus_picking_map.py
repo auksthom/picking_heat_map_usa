@@ -11,20 +11,18 @@ from datetime import datetime
 st.set_page_config(layout="wide", page_title="Columbus Picking Velocity")
 
 # --- 2. DATA SOURCES ---
-# Using the Columbus Google Sheet ID for Picking Data
 SHEET_ID = "1VQcQxlNfLXaxNhpEpcsoLP-IClQ7pWyGHZ32_NLaIRI"
 
 @st.cache_data(ttl=10)
 def load_data():
     t = datetime.now().timestamp()
     
-    # A. Load Picking Data from Google Sheets (RAW tab)
+    # A. Load Picking Data
     RAW_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=RAW"
     df_raw = pd.read_csv(f"{RAW_URL}&t={t}")
     df_raw.columns = df_raw.columns.str.strip().str.replace(' ', '_').str.lower()
     
     # B. Load Layout (Direct Excel Scan)
-    # This reads your Excel file as the "Source of Truth" for the map shape
     df_layout = pd.read_excel('Untitled spreadsheet (1).xlsx', header=None)
     
     return df_layout, df_raw
@@ -41,27 +39,34 @@ try:
     client_list = ["All Clients"] + sorted(df_raw_data['client_name'].dropna().unique().tolist())
     selected_client = st.sidebar.selectbox("Filter by Client", client_list)
 
-    # --- 4. DATA PREP ---
+    # --- 4. DATA PREP & GHOST FILTERING ---
+    # Get the set of all valid bays from the Excel Layout
+    valid_layout_bays = set()
+    for val in df_map.values.flatten():
+        if pd.notna(val) and str(val).strip().lower() != "nan":
+            valid_layout_bays.add(sanitize(val))
+
+    # Filter Raw Data by Client
     if selected_client != "All Clients":
         df_work = df_raw_data[df_raw_data['client_name'] == selected_client].copy()
     else:
         df_work = df_raw_data.copy()
 
-    # Standardize column names for the handshake
-    if 'bay' in df_work.columns: 
-        df_work = df_work.rename(columns={'bay': 'bay_name'})
-        
-    df_work['match_key'] = df_work['bay_name'].apply(sanitize)
-    
-    # Calculate Velocity (Count of picks per bay)
-    bay_counts = df_work['match_key'].value_counts().to_dict()
+    df_work['match_key'] = df_work['bay'].apply(sanitize)
 
-    # --- 5. GRID SCAN (Turning Excel into a Picking Grid) ---
+    # SPLIT DATA: Mapped vs Unmapped (Ghosts)
+    df_mapped = df_work[df_work['match_key'].isin(valid_layout_bays)].copy()
+    df_ghosts = df_work[~df_work['match_key'].isin(valid_layout_bays)].copy()
+
+    # Calculate Velocity ONLY for mapped bays
+    bay_counts = df_mapped['match_key'].value_counts().to_dict()
+
+    # --- 5. GRID SCAN ---
     color_grid = pd.DataFrame(index=df_map.index, columns=df_map.columns, dtype=float)
     label_positions = []
     processed_labels = set()
     
-    search_query = st.sidebar.text_input("🔍 Search Bay (e.g. PS-B-11)")
+    search_query = st.sidebar.text_input("🔍 Search Bay")
     search_key = sanitize(search_query) if search_query else None
     found_coords = None
 
@@ -70,16 +75,11 @@ try:
             val = str(df_map.iloc[r, c]).strip()
             if val and val.lower() != "nan" and val != "":
                 m_key = sanitize(val)
-                
-                # Assign Count (Velocity)
                 count = bay_counts.get(m_key, 0)
-                # If 0 picks, we use 0.001 to show our "Neutral Gray"
                 color_grid.iloc[r, c] = count if count > 0 else 0.001
                 
-                if search_key and m_key == search_key:
-                    found_coords = (r, c)
+                if search_key and m_key == search_key: found_coords = (r, c)
 
-                # Label Logic (e.g., PS-A, PS-B)
                 clean_name = re.sub(r'\d+', '', val).rstrip('-').strip()
                 if f"{clean_name}_{c}" not in processed_labels:
                     label_positions.append((r, c, clean_name))
@@ -90,13 +90,13 @@ try:
     # --- 6. VISUALIZATION ---
     st.title(f"Columbus Picking Velocity: {selected_client}")
     
+    # max_val now only reflects data that is actually ON the map
     max_val = max(bay_counts.values()) if bay_counts else 1
     
     plt.rcParams['figure.facecolor'] = '#121212'
     fig, ax = plt.subplots(figsize=(25, 12)) 
     ax.set_facecolor('#121212')
     
-    # Heatmap Colors: Neutral Gray -> Green -> Red
     colors = ["#f2f2f2", "#2ecc71", "#f1c40f", "#e67e22", "#e74c3c"]
     cmap = mcolors.LinearSegmentedColormap.from_list("velocity", colors, N=256)
     
@@ -112,29 +112,24 @@ try:
     plt.axis('off')
     st.pyplot(fig, use_container_width=True)
 
-    # --- 7. SUMMARY DASHBOARD ---
+    # --- 7. SUMMARY DASHBOARDS ---
     st.markdown("---")
-    st.subheader(f"📑 Columbus Picking Summary ({selected_client})")
+    col_a, col_b, col_c = st.columns(3)
     
-    sum_col1, sum_col2, sum_col3 = st.columns(3)
-    
-    with sum_col1:
-        st.markdown("### 🏟️ Top 15 Bays")
-        bay_rank = df_work['bay_name'].value_counts().reset_index()
-        bay_rank.columns = ['Bay', 'Picks']
-        st.dataframe(bay_rank.head(15), use_container_width=True, hide_index=True)
+    with col_a:
+        st.subheader("🏟️ Top 15 Mapped Bays")
+        st.dataframe(df_mapped['bay'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
         
-    with sum_col2:
-        st.markdown("### 📍 Top 15 Locations")
-        loc_rank = df_work['location'].value_counts().reset_index()
-        loc_rank.columns = ['Location', 'Picks']
-        st.dataframe(loc_rank.head(15), use_container_width=True, hide_index=True)
-        
-    with sum_col3:
-        st.markdown("### 👤 Top Clients (Site Activity)")
-        client_rank = df_raw_data['client_name'].value_counts().reset_index()
-        client_rank.columns = ['Client', 'Total Picks']
-        st.dataframe(client_rank.head(15), use_container_width=True, hide_index=True)
+    with col_b:
+        st.subheader("📍 Top 15 Mapped Locations")
+        st.dataframe(df_mapped['location'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
+
+    with col_c:
+        st.error("👻 Unmapped 'Ghost' Locations")
+        st.write("These locations had picks but are NOT in your Excel layout:")
+        ghost_summary = df_ghosts['bay'].value_counts().reset_index()
+        ghost_summary.columns = ['Bay Name', 'Pick Count']
+        st.dataframe(ghost_summary.head(15), use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"Error: {e}")
