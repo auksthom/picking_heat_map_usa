@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Columbus Picking Velocity")
+st.set_page_config(layout="wide", page_title="Columbus Picking Dashboard")
 
 # --- 2. DATA SOURCES ---
 SHEET_ID = "1VQcQxlNfLXaxNhpEpcsoLP-IClQ7pWyGHZ32_NLaIRI"
@@ -27,7 +27,7 @@ try:
 
     def sanitize(text):
         if pd.isna(text): return ""
-        return re.sub(r'[^A-Z0-9]', '', str(text)).upper()
+        return re.sub(r'[^A-Z0-9]', '', str(text).upper())
 
     # --- 3. FILTERS ---
     st.sidebar.title("🏃 Columbus Picking")
@@ -35,16 +35,14 @@ try:
     selected_client = st.sidebar.selectbox("Filter by Client", client_list)
 
     # --- 4. DATA PREP & GHOST FILTERING ---
-    # Get valid bays from Excel
+    # Map valid bays from Excel
     valid_layout_bays = {sanitize(val) for val in df_map.values.flatten() if pd.notna(val) and str(val).strip().lower() != "nan"}
-
-    # Prep the data
     df_raw_data['match_key'] = df_raw_data['bay'].apply(sanitize)
 
-    # Global Ghosts (Every ghost on the site, regardless of client)
+    # Global Ghosts for the auditor
     df_global_ghosts = df_raw_data[~df_raw_data['match_key'].isin(valid_layout_bays)].copy()
 
-    # Filtered Data for the Map
+    # Filtered Data for Map
     if selected_client != "All Clients":
         df_work = df_raw_data[df_raw_data['client_name'] == selected_client].copy()
     else:
@@ -99,30 +97,33 @@ try:
     plt.axis('off')
     st.pyplot(fig, use_container_width=True)
 
-    # --- 7. SUMMARY DASHBOARDS ---
+    # --- 7. THE FULL SUMMARY DASHBOARD ---
     st.markdown("---")
-    col_left, col_right = st.columns([2, 1])
+    st.subheader(f"📊 Activity Stats: {selected_client}")
     
-    with col_left:
-        st.subheader(f"🏟️ Top Mapped Bays ({selected_client})")
-        st.dataframe(df_mapped['bay'].value_counts().reset_index(), use_container_width=True, hide_index=True)
+    col_bays, col_locs, col_ghosts = st.columns(3)
+    
+    with col_bays:
+        st.markdown("### 🏟️ Top 15 Mapped Bays")
+        st.write("*(Consolidated traffic zones)*")
+        st.dataframe(df_mapped['bay'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
         
-    with col_right:
-        st.error("👻 Ghost Location Auditor")
-        ghost_view = st.radio("Show Ghosts for:", ["Current Client Only", "Entire Site (All Clients)"])
-        
-        if ghost_view == "Current Client Only":
-            # Filter ghosts to just the selected client
-            display_ghosts = df_global_ghosts[df_global_ghosts['client_name'] == selected_client] if selected_client != "All Clients" else df_global_ghosts
-        else:
-            display_ghosts = df_global_ghosts
+    with col_locs:
+        st.markdown("### 📍 Top 15 Picked Locations")
+        st.write("*(Specific bin/shelf faces)*")
+        st.dataframe(df_mapped['location'].value_counts().reset_index().head(15), use_container_width=True, hide_index=True)
 
-        ghost_summary = display_ghosts['bay'].value_counts().reset_index()
-        ghost_summary.columns = ['Bay Name', 'Pick Count']
+    with col_ghosts:
+        st.error("👻 Ghost Auditor")
+        ghost_view = st.radio("Auditor Filter:", ["Client Only", "Entire Site"], horizontal=True)
         
-        st.write(f"Showing {len(ghost_summary)} unmapped locations:")
-        # Removed .head(15) so you see EVERYTHING
-        st.dataframe(ghost_summary, use_container_width=True, hide_index=True)
+        target_ghosts = df_global_ghosts[df_global_ghosts['client_name'] == selected_client] if (ghost_view == "Client Only" and selected_client != "All Clients") else df_global_ghosts
+        
+        ghost_sum = target_ghosts['bay'].value_counts().reset_index()
+        ghost_sum.columns = ['Bay Name', 'Picks']
+        
+        st.write(f"**{len(ghost_sum)}** locations found that are not in Excel.")
+        st.dataframe(ghost_sum, use_container_width=True, hide_index=True)
 
 except Exception as e:
     st.error(f"Error: {e}")
